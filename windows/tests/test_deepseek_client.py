@@ -76,3 +76,61 @@ def test_malformed_reply_payload_is_rejected(monkeypatch):
             "key",
         )
 
+
+def test_dict_shaped_replies_are_unwrapped(monkeypatch):
+    """模型偶尔不守规矩返回 {"text": "..."} 结构，这里兜住而不是报错。"""
+    monkeypatch.setattr(
+        deepseek_client,
+        "_post",
+        lambda *args, **kwargs: {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "replies": [
+                                    {"text": "第一条", "tactic": "接住情绪"},
+                                    {"reply": "第二条"},
+                                    "第三条",
+                                ]
+                            },
+                            ensure_ascii=False,
+                        )
+                    }
+                }
+            ]
+        },
+    )
+
+    replies = deepseek_client.generate_suggestions(
+        ChatSnapshot("朋友", [Message("other", "你好")]), "朋友", Analysis(), "key"
+    )
+    assert replies == ["第一条", "第二条", "第三条"]
+
+
+def test_topic_hooks_reach_the_generation_prompt(monkeypatch):
+    captured = {}
+
+    def fake_post(key, body, timeout=35):
+        captured.update(body)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps({"replies": ["甲", "乙", "丙"]}, ensure_ascii=False)
+                    }
+                }
+            ]
+        }
+
+    monkeypatch.setattr(deepseek_client, "_post", fake_post)
+    analysis = Analysis(topic_hooks=["新开的川菜", "上次说想吃的店"])
+
+    deepseek_client.generate_suggestions(
+        ChatSnapshot("朋友", [Message("other", "去吃饭吗")]), "朋友", analysis, "key"
+    )
+
+    content = captured["messages"][-1]["content"]
+    assert "新开的川菜" in content
+    assert "上次说想吃的店" in content
+

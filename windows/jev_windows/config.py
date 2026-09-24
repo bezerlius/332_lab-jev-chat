@@ -25,9 +25,16 @@ def config_dir() -> Path:
 class AppConfig:
     relationship: str = "对方是我的朋友；from=me 是我发的，from=other 是对方发的"
     deepseek_model: str = "deepseek-flash"
+    # 判断引擎：deepseek（默认，无需 Jev 密钥）或 jev（TypeSafe 官方判断模型）
+    judge_backend: str = "deepseek"
+    # DeepSeek 判断用的模型，判断比起草更吃推理能力，默认用 deepseek-chat
+    judge_model: str = "deepseek-chat"
     chat_rect: Rect | None = None
     allowed_titles: list[str] = field(default_factory=list)
     auto_analyze: bool = False
+
+    def judge_backend_normalized(self) -> str:
+        return "jev" if str(self.judge_backend).strip().lower() == "jev" else "deepseek"
 
     @classmethod
     def load(cls) -> "AppConfig":

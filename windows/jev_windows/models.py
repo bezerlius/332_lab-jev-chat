@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
 @dataclass(frozen=True)
@@ -47,3 +47,6 @@ class Analysis:
     should_reply_now: float | None = None
     tension_resolved: float | None = None
     latency_ms: int = 0
+    # 从对话里挖出来的、可以继续聊下去的方向。仅 LLM 判断引擎会填，
+    # Jev 后端拿不到时为默认空列表，下游按"没有钩子"处理。
+    topic_hooks: list[str] = field(default_factory=list)

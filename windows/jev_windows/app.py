@@ -14,8 +14,9 @@ from .config import (
     save_api_key,
     save_deepseek_api_key,
 )
-from .deepseek_client import DeepSeekError, generate_suggestions
+from .deepseek_client import REPLY_TACTICS, DeepSeekError, generate_suggestions
 from .jev_api import judge
+from .llm_judge import DEFAULT_JUDGE_MODEL, judge_with_llm
 from .models import Analysis, Rect
 from .safety import assert_safe_chat
 from .windows_api import client_rect_on_screen, find_wechat_window
@@ -46,6 +47,11 @@ NEED_LABELS = {
     "explanation": "解释",
     "care": "被重视",
     "nothing": "无需追加",
+}
+# 设置面板里判断引擎下拉：显示文案 -> 存进配置的 backend 值
+JUDGE_BACKENDS = {
+    "DeepSeek（默认，不需要 Jev 密钥）": "deepseek",
+    "Jev / TypeSafe（需要官方密钥）": "jev",
 }
 
 
@@ -113,45 +119,65 @@ class SettingsDialog(tk.Toplevel):
         super().__init__(parent)
         self.parent_app = parent
         self.title("设置")
-        self.geometry("560x470")
+        self.geometry("560x640")
         self.transient(parent)
         self.grab_set()
         self.columnconfigure(1, weight=1)
 
-        ttk.Label(self, text="Jev / TypeSafe API 密钥").grid(row=0, column=0, padx=12, pady=(18, 6), sticky="w")
-        self.key = ttk.Entry(self, show="•")
-        self.key.grid(row=0, column=1, padx=12, pady=(18, 6), sticky="ew")
-        key_status = "已保存密钥；留空保持不变" if load_api_key() else "尚未保存密钥"
-        ttk.Label(self, text=key_status).grid(
-            row=1, column=1, padx=12, sticky="w"
-        )
-
-        ttk.Label(self, text="DeepSeek API 密钥").grid(row=2, column=0, padx=12, pady=(18, 6), sticky="w")
+        ttk.Label(self, text="DeepSeek API 密钥").grid(row=0, column=0, padx=12, pady=(18, 6), sticky="w")
         self.deepseek_key = ttk.Entry(self, show="•")
-        self.deepseek_key.grid(row=2, column=1, padx=12, pady=(18, 6), sticky="ew")
-        deepseek_status = "已保存密钥；留空保持不变" if load_deepseek_api_key() else "尚未配置；配置后生成建议回复"
-        ttk.Label(self, text=deepseek_status).grid(row=3, column=1, padx=12, sticky="w")
+        self.deepseek_key.grid(row=0, column=1, padx=12, pady=(18, 6), sticky="ew")
+        deepseek_status = "已保存密钥；留空保持不变" if load_deepseek_api_key() else "尚未配置：判断与生成建议都需要它"
+        ttk.Label(self, text=deepseek_status).grid(row=1, column=1, padx=12, sticky="w")
 
-        ttk.Label(self, text="DeepSeek 模型").grid(row=4, column=0, padx=12, pady=10, sticky="w")
+        ttk.Label(self, text="判断引擎").grid(row=2, column=0, padx=12, pady=(14, 6), sticky="w")
+        current_backend = parent.settings.judge_backend_normalized()
+        backend_display = next(
+            (text for text, value in JUDGE_BACKENDS.items() if value == current_backend),
+            next(iter(JUDGE_BACKENDS)),
+        )
+        self.judge_backend = ttk.Combobox(
+            self, values=list(JUDGE_BACKENDS.keys()), state="readonly"
+        )
+        self.judge_backend.set(backend_display)
+        self.judge_backend.grid(row=2, column=1, padx=12, pady=(14, 6), sticky="ew")
+        ttk.Label(self, text="选 DeepSeek 时不需要 Jev 密钥").grid(row=3, column=1, padx=12, sticky="w")
+
+        ttk.Label(self, text="判断模型（DeepSeek）").grid(row=4, column=0, padx=12, pady=10, sticky="w")
+        self.judge_model = ttk.Entry(self)
+        self.judge_model.insert(0, parent.settings.judge_model or DEFAULT_JUDGE_MODEL)
+        self.judge_model.grid(row=4, column=1, padx=12, pady=10, sticky="ew")
+
+        ttk.Label(self, text="回复生成模型").grid(row=5, column=0, padx=12, pady=10, sticky="w")
         self.deepseek_model = ttk.Entry(self)
         self.deepseek_model.insert(0, parent.settings.deepseek_model)
-        self.deepseek_model.grid(row=4, column=1, padx=12, pady=10, sticky="ew")
+        self.deepseek_model.grid(row=5, column=1, padx=12, pady=10, sticky="ew")
 
-        ttk.Label(self, text="关系说明").grid(row=5, column=0, padx=12, pady=6, sticky="nw")
+        ttk.Label(self, text="Jev / TypeSafe 密钥").grid(row=6, column=0, padx=12, pady=(14, 6), sticky="w")
+        self.key = ttk.Entry(self, show="•")
+        self.key.grid(row=6, column=1, padx=12, pady=(14, 6), sticky="ew")
+        key_status = (
+            "已保存密钥；留空保持不变"
+            if load_api_key()
+            else "未保存；仅当判断引擎选 Jev 时才需要"
+        )
+        ttk.Label(self, text=key_status).grid(row=7, column=1, padx=12, sticky="w")
+
+        ttk.Label(self, text="关系说明").grid(row=8, column=0, padx=12, pady=6, sticky="nw")
         self.relationship = tk.Text(self, height=5, wrap="word")
         self.relationship.insert("1.0", parent.settings.relationship)
-        self.relationship.grid(row=5, column=1, padx=12, pady=6, sticky="ew")
+        self.relationship.grid(row=8, column=1, padx=12, pady=6, sticky="ew")
 
-        ttk.Label(self, text="会话白名单").grid(row=6, column=0, padx=12, pady=6, sticky="w")
+        ttk.Label(self, text="会话白名单").grid(row=9, column=0, padx=12, pady=6, sticky="w")
         self.whitelist = ttk.Entry(self)
         self.whitelist.insert(0, "，".join(parent.settings.allowed_titles))
-        self.whitelist.grid(row=6, column=1, padx=12, pady=6, sticky="ew")
-        ttk.Label(self, text="逗号分隔；留空允许所有会话").grid(row=7, column=1, padx=12, sticky="w")
+        self.whitelist.grid(row=9, column=1, padx=12, pady=6, sticky="ew")
+        ttk.Label(self, text="逗号分隔；留空允许所有会话").grid(row=10, column=1, padx=12, sticky="w")
 
         buttons = ttk.Frame(self)
-        buttons.grid(row=8, column=0, columnspan=2, pady=20)
-        ttk.Button(buttons, text="清除 Jev 密钥", command=self._clear_key).pack(side="left", padx=6)
+        buttons.grid(row=11, column=0, columnspan=2, pady=20)
         ttk.Button(buttons, text="清除 DeepSeek 密钥", command=self._clear_deepseek_key).pack(side="left", padx=6)
+        ttk.Button(buttons, text="清除 Jev 密钥", command=self._clear_key).pack(side="left", padx=6)
         ttk.Button(buttons, text="取消", command=self.destroy).pack(side="left", padx=6)
         ttk.Button(buttons, text="保存", command=self._save).pack(side="left", padx=6)
 
@@ -174,6 +200,8 @@ class SettingsDialog(tk.Toplevel):
             save_deepseek_api_key(deepseek_key)
         settings = self.parent_app.settings
         settings.deepseek_model = self.deepseek_model.get().strip() or "deepseek-flash"
+        settings.judge_backend = JUDGE_BACKENDS.get(self.judge_backend.get().strip(), "deepseek")
+        settings.judge_model = self.judge_model.get().strip() or DEFAULT_JUDGE_MODEL
         settings.relationship = self.relationship.get("1.0", "end").strip()
         raw_titles = self.whitelist.get().replace("，", ",")
         settings.allowed_titles = [item.strip() for item in raw_titles.split(",") if item.strip()]
@@ -215,10 +243,10 @@ class JevApp(tk.Tk):
         )
         self.analyze_button.pack(fill="x", padx=16, pady=8, ipady=7)
 
-        self.status = tk.StringVar(value="请先设置 Jev API 密钥并框选聊天区")
+        self.status = tk.StringVar(value="请先配置 DeepSeek API 密钥并框选聊天区")
         ttk.Label(self, textvariable=self.status, wraplength=430).pack(fill="x", padx=18, pady=4)
 
-        self.summary = ttk.LabelFrame(self, text="Jev 判断", padding=12)
+        self.summary = ttk.LabelFrame(self, text="对话判断", padding=12)
         self.summary.pack(fill="x", padx=16, pady=8)
         self.summary_text = tk.StringVar(value="尚未分析")
         ttk.Label(self.summary, textvariable=self.summary_text, wraplength=410, justify="left").pack(fill="x")
@@ -253,9 +281,18 @@ class JevApp(tk.Tk):
         if self.settings.chat_rect is None:
             messagebox.showinfo("需要校准", "请先框选聊天消息区域。", parent=self)
             return
+        backend = self.settings.judge_backend_normalized()
         key = load_api_key()
-        if not key:
-            messagebox.showinfo("需要密钥", "请在设置中保存 Jev / TypeSafe API 密钥。", parent=self)
+        deepseek_key = load_deepseek_api_key()
+        if backend == "jev" and not key:
+            messagebox.showinfo(
+                "需要密钥",
+                "判断引擎选的是 Jev，请先保存 Jev / TypeSafe 密钥，或在设置里把判断引擎切换为 DeepSeek。",
+                parent=self,
+            )
+            return
+        if not deepseek_key:
+            messagebox.showinfo("需要密钥", "请在设置中保存 DeepSeek API 密钥。", parent=self)
             return
         self.is_analyzing = True
         self.analyze_button.configure(state="disabled")
@@ -281,13 +318,14 @@ class JevApp(tk.Tk):
             return
 
         relationship = self.settings.relationship
-        deepseek_key = load_deepseek_api_key()
         deepseek_model = self.settings.deepseek_model
-        self._show_suggestion_message("等待 Jev 判断…" if deepseek_key else "未配置 DeepSeek API；本次只做 Jev 判断")
-        self.set_status(f"已识别 {len(snapshot.messages)} 条消息，正在调用 Jev 判断…")
+        judge_model = self.settings.judge_model or DEFAULT_JUDGE_MODEL
+        engine_name = "DeepSeek" if backend == "deepseek" else "Jev"
+        self._show_suggestion_message("等待判断结果…")
+        self.set_status(f"已识别 {len(snapshot.messages)} 条消息，正在调用{engine_name}判断…")
         threading.Thread(
             target=self._analyze_worker,
-            args=(snapshot, key, relationship, deepseek_key, deepseek_model),
+            args=(snapshot, key, relationship, deepseek_key, deepseek_model, backend, judge_model),
             daemon=True,
         ).start()
 
@@ -308,14 +346,44 @@ class JevApp(tk.Tk):
         relationship: str,
         deepseek_key: str,
         deepseek_model: str,
+        backend: str,
+        judge_model: str,
     ) -> None:
+        engine_name = "Jev" if backend == "jev" else "DeepSeek"
         try:
-            analysis = judge(snapshot, relationship, key)
-            self.after(0, lambda: self._show_analysis(analysis))
+            analysis: Analysis | None = None
+            judge_error = ""
+            try:
+                if backend == "jev":
+                    analysis = judge(snapshot, relationship, key)
+                else:
+                    analysis = judge_with_llm(snapshot, relationship, deepseek_key, judge_model)
+            except Exception as exc:
+                judge_error = str(exc)
+
+            if analysis is None:
+                # 判断失败不阻断生成：退化成没有结构化判断，照样给建议。
+                analysis = Analysis()
+                self.after(0, lambda m=judge_error: self._show_analysis_unavailable(m))
+            else:
+                self.after(0, lambda a=analysis: self._show_analysis(a))
+
             if not deepseek_key:
-                self.after(0, lambda: self.set_status("Jev 判断完成；配置 DeepSeek API 后可生成建议回复"))
+                self.after(
+                    0,
+                    lambda m=judge_error, n=engine_name: self.set_status(
+                        f"{n}判断失败：{m}" if m else "判断完成；配置 DeepSeek API 后可生成建议回复"
+                    ),
+                )
                 return
-            self.after(0, lambda: self.set_status("Jev 判断完成，正在让 DeepSeek 生成建议回复…"))
+            self.after(
+                0,
+                lambda err=judge_error: self.set_status(
+                    f"{engine_name}判断不可用（{err}），直接生成建议回复…"
+                    if err
+                    else f"{engine_name}判断完成，正在让 DeepSeek 生成建议回复…"
+                ),
+            )
             try:
                 replies = generate_suggestions(
                     snapshot,
@@ -327,10 +395,17 @@ class JevApp(tk.Tk):
             except DeepSeekError as exc:
                 message = str(exc)
                 self.after(0, lambda message=message: self._show_suggestion_message(message))
-                self.after(0, lambda message=message: self.set_status(f"Jev 判断完成；{message}"))
+                self.after(0, lambda message=message: self.set_status(f"生成建议失败：{message}"))
                 return
             self.after(0, lambda: self._show_suggestions(replies))
-            self.after(0, lambda: self.set_status("Jev 判断和 DeepSeek 建议回复已完成"))
+            self.after(
+                0,
+                lambda err=judge_error: self.set_status(
+                    "判断不可用；已直接生成建议回复"
+                    if err
+                    else f"{engine_name}判断和 DeepSeek 建议回复已完成"
+                ),
+            )
         except Exception as exc:
             message = str(exc)
             self.after(0, lambda message=message: self._show_error(message))
@@ -352,14 +427,26 @@ class JevApp(tk.Tk):
         danger = "—" if analysis.danger_level is None else f"{analysis.danger_level:.1f}/9"
         reply_probability = "—" if analysis.should_reply_now is None else f"{analysis.should_reply_now * 100:.0f}%"
         resolved_probability = "—" if analysis.tension_resolved is None else f"{analysis.tension_resolved * 100:.0f}%"
+        lines = [
+            f"真实意图：{INTENT_LABELS.get(analysis.true_intent, analysis.true_intent or '—')}",
+            f"危险程度：{danger}",
+            f"对方需要：{NEED_LABELS.get(analysis.need, analysis.need or '—')}",
+            f"最佳动作：{ACTION_LABELS.get(analysis.best_action, analysis.best_action or '—')}",
+            f"需要实质回复：{reply_probability}",
+            f"紧张已化解：{resolved_probability}",
+        ]
+        if analysis.topic_hooks:
+            lines.append(f"可聊话题：{' / '.join(analysis.topic_hooks)}")
+        lines.append(f"耗时：{analysis.latency_ms} ms")
+        self.summary_text.set("\n".join(lines))
+
+    def _show_analysis_unavailable(self, reason: str) -> None:
+        """判断引擎失败时的展示：不假装判断过，但也不阻断建议生成。"""
+        detail = reason.strip() if reason else "未知原因"
         self.summary_text.set(
-            f"真实意图：{INTENT_LABELS.get(analysis.true_intent, analysis.true_intent or '—')}\n"
-            f"危险程度：{danger}\n"
-            f"对方需要：{NEED_LABELS.get(analysis.need, analysis.need or '—')}\n"
-            f"最佳动作：{ACTION_LABELS.get(analysis.best_action, analysis.best_action or '—')}\n"
-            f"需要实质回复：{reply_probability}\n"
-            f"紧张已化解：{resolved_probability}\n"
-            f"耗时：{analysis.latency_ms} ms"
+            "判断不可用\n"
+            f"原因：{detail}\n"
+            "（仍会基于对话原文生成建议回复，不自动发送）"
         )
 
     def _show_suggestion_message(self, text: str) -> None:
@@ -371,10 +458,15 @@ class JevApp(tk.Tk):
         for widget in self.suggestions.winfo_children():
             widget.destroy()
         for index, reply in enumerate(replies, start=1):
+            tactic = REPLY_TACTICS[index - 1] if index - 1 < len(REPLY_TACTICS) else ""
             row = ttk.Frame(self.suggestions)
             row.pack(fill="x", pady=5)
-            ttk.Label(row, text=f"{index}. {reply}", wraplength=360, justify="left").pack(
-                side="left", fill="x", expand=True
+            body = ttk.Frame(row)
+            body.pack(side="left", fill="x", expand=True)
+            if tactic:
+                ttk.Label(body, text=tactic, style="Header.TLabel").pack(anchor="w")
+            ttk.Label(body, text=f"{index}. {reply}", wraplength=360, justify="left").pack(
+                anchor="w", fill="x"
             )
             ttk.Button(row, text="复制", command=lambda text=reply: self._copy_reply(text)).pack(
                 side="right", padx=(8, 0)
